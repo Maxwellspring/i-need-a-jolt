@@ -3,115 +3,404 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
-    <script src="https://unpkg.com/three@0.161.0/build/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jolt-physics@0.36.0/dist/jolt-physics.wasm-compat.min.js"></script>    
-    <script type="module" src="script.js"></script>
+    <title>Jolt Physics Web Game</title>
+    <script type="importmap">
+        {
+            "imports": {
+              "three": "https://cdn.jsdelivr.net/npm/three@0.174.0/build/three.module.js",
+              "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.174.0/examples/jsm/",
+
+                // Corrected Jolt Physics importmap entry:
+                // This points to the main JS loader, not directly to the WASM.
+                // The WASM path will be set dynamically.
+                "@jolt-physics/jolt-physics": "https://cdn.jsdelivr.net/npm/@jolt-physics/jolt-physics@0.36.0/dist/jolt-physics.js"
+              }
+        }
+    </script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #222;
+        }
+
+        #gameCanvas {
+            background-color: #333;
+            border: 2px solid #555;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+            width: 80%;
+            max-width: 800px;
+            height: auto;
+            aspect-ratio: 8 / 6;
+        }
+
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 10;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        .control-button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 5px;
+            background-color: #4CAF50;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            transition: background-color 0.3s ease;
+        }
+
+        .control-button:hover {
+            background-color: #367c39;
+        }
+
+        .control-button:active {
+            background-color: #2b5e2e;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+            transform: translateY(1px);
+        }
+
+        #message {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            z-index: 10;
+            font-size: 16px;
+        }
+
+        #warning {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(255, 0, 0, 0.8);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            z-index: 10;
+            font-size: 16px;
+            display: none;
+        }
+    </style>
 </head>
 <body>
-    
+    <canvas id="gameCanvas"></canvas>
+    <div id="controls">
+        <button id="createBox" class="control-button">Create Box</button>
+        <button id="createSphere" class="control-button">Create Sphere</button>
+    </div>
+    <div id="message">Welcome to Jolt Physics Game!</div>
+    <div id="warning" style="display:none;"></div>
+    <script type="module">
+        import * as THREE from 'three';
+        import Jolt from '@jolt-physics/jolt-physics'; // This now imports the JS loader due to importmap
+
+        const canvas = document.getElementById('gameCanvas');
+        const createBoxButton = document.getElementById('createBox');
+        const createSphereButton = document.getElementById('createSphere');
+        const messageDisplay = document.getElementById('message');
+        const warningDisplay = document.getElementById('warning');
+
+        let physicsSystem;
+        let bodyInterface;
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, canvas.width / canvas.height, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+        const objects = [];
+        let joltInitialized = false;
+        const worldScale = 10; // This seems to be a scale factor for canvas to world coordinates, adjust if needed
+
+        function toCanvas(pos) {
+            // This function seems geared towards a 2D canvas, but Three.js is 3D.
+            // If you intend to click on the canvas and create objects, you'll need to
+            // project mouse coordinates into your 3D scene. For now, it's not directly used
+            // in object creation buttons, which use random positions.
+            return {
+                x: pos.x * worldScale + canvas.width / 2,
+                y: canvas.height / 2 - pos.y * worldScale
+            };
+        }
+
+        function toWorld(x, y) {
+            // Similar to toCanvas, this converts 2D canvas coords to 3D world coords (on XY plane, Z=0)
+            return {
+                x: (x - canvas.width / 2) / worldScale,
+                y: (canvas.height / 2 - y) / worldScale
+            };
+        }
+
+        function displayMessage(text, duration = 3000) {
+            messageDisplay.textContent = text;
+            messageDisplay.style.display = 'block';
+            setTimeout(() => {
+                messageDisplay.style.display = 'none';
+            }, duration);
+        }
+
+        function showWarning(text, duration = 5000) {
+            warningDisplay.textContent = text;
+            warningDisplay.style.display = 'block';
+            setTimeout(() => {
+                warningDisplay.style.display = 'none';
+            }, duration);
+        }
+
+        function resizeCanvas() {
+            const container = document.querySelector('body');
+            // Using window.innerWidth/Height for more reliable sizing relative to viewport
+            const width = Math.min(window.innerWidth * 0.8, 800);
+            const height = width * 0.75;
+            canvas.width = width;
+            canvas.height = height;
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+            renderer.setSize(width, height);
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+
+        async function initJolt() {
+            if (joltInitialized) return;
+            try {
+                // Correctly set the WASM path BEFORE initializing Jolt.
+                // The path here should be the DIRECTORY where the WASM file is.
+                // In your importmap, you linked to the WASM file directly, which is not how Jolt expects it.
+                // It expects the path to the directory containing it.
+                Jolt.setWasmPath('https://cdn.jsdelivr.net/npm/@jolt-physics/jolt-physics@0.36.0/dist/');
+
+                // Now initialize Jolt. The Jolt.init() method actually performs the WASM loading.
+                // Jolt.default() is what you get when you `import Jolt from '...'` and then call its default export,
+                // but for direct initialization, `Jolt.init()` is the common way.
+                await Jolt.init();
+
+                const memory = {
+                    allocate: Jolt.allocate,
+                    free: Jolt.free,
+                    copy: Jolt.copy,
+                };
+
+                // Initialize Jolt physics system
+                // The PhysicsSystem constructor takes different arguments depending on the Jolt.js version.
+                // It's usually (max_bodies, max_body_pairs, max_contact_constraints, max_temp_allocations, max_broad_phase_query_results, max_friction_constraints)
+                // Let's use common defaults or check Jolt.js docs for exact `PhysicsSystem` constructor signature if errors persist.
+                // For a simple example, initializing with reasonable defaults:
+                physicsSystem = new Jolt.PhysicsSystem();
+                physicsSystem.Init(
+                    1024, // Max bodies
+                    0,    // Max body pairs (0 means default)
+                    1024, // Max contact constraints
+                    65536, // Max temp allocations
+                    65536, // Max broad phase query results
+                    65536  // Max friction constraints
+                );
+
+
+                physicsSystem.setGravity(new Jolt.Vec3(0, -9.81, 0));
+                bodyInterface = physicsSystem.getBodyInterface();
+                physicsSystem.setNumThreads(navigator.hardwareConcurrency || 4); // Fallback for hardwareConcurrency
+                joltInitialized = true;
+                displayMessage('Jolt Physics Initialized!');
+                createPhysicsWorld(); // Setup the initial physics world (ground, lights etc.)
+            } catch (error) {
+                console.error("Failed to initialize Jolt Physics:", error);
+                showWarning("Jolt Physics failed to initialize. The game may not function correctly. Check console for details.");
+            }
+        }
+
+        function createPhysicsWorld() {
+            if (!joltInitialized) {
+                console.warn("Jolt Physics is not initialized yet.");
+                return;
+            }
+
+            // Create a static ground plane for physics
+            const groundShape = new Jolt.BoxShape(new Jolt.Vec3(50, 0.5, 50)); // Half-extents
+            const groundSettings = new Jolt.BodyCreationSettings();
+            groundSettings.setShape(groundShape);
+            groundSettings.setMotionType(Jolt.EMotionType.kMotionTypeStatic);
+            groundSettings.setPosition(new Jolt.Vec3(0, -0.5, 0)); // Positioned at y=0, with thickness going downwards
+            const groundBodyID = bodyInterface.createBody(groundSettings);
+            physicsSystem.addBody(groundBodyID, Jolt.EActivation.kDontActivate); // Static bodies don't need activation
+
+            // Create Three.js mesh for the ground
+            const groundGeometry = new THREE.BoxGeometry(100, 1, 100); // Full dimensions
+            const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x444444 });
+            const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
+            groundMesh.position.set(0, -0.5, 0); // Match physics body position
+            groundMesh.receiveShadow = true;
+            scene.add(groundMesh);
+            // We don't add static ground to `objects` as it doesn't move
+
+            // Lighting
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            directionalLight.position.set(10, 20, 10);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048; // Higher resolution for shadows
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 50;
+            directionalLight.shadow.camera.left = -20;
+            directionalLight.shadow.camera.right = 20;
+            directionalLight.shadow.camera.top = 20;
+            directionalLight.shadow.camera.bottom = -20;
+            scene.add(directionalLight);
+
+            const ambientLight = new THREE.AmbientLight(0x606060);
+            scene.add(ambientLight);
+
+            // Camera setup
+            camera.position.set(0, 10, 25); // Adjusted camera position for better view
+            camera.lookAt(new THREE.Vector3(0, 0, 0)); // Look at the origin
+            scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+            
+            resizeCanvas(); // Ensure canvas is sized correctly on load
+            animate(); // Start the render loop
+        }
+
+        function createBox(x, y, sizeX, sizeY, sizeZ) {
+            if (!joltInitialized) {
+                console.warn("Jolt Physics is not initialized yet. Cannot create box.");
+                showWarning("Physics not initialized. Cannot create box.");
+                return;
+            }
+            const halfX = sizeX / 2;
+            const halfY = sizeY / 2;
+            const halfZ = sizeZ / 2;
+            const boxShape = new Jolt.BoxShape(new Jolt.Vec3(halfX, halfY, halfZ));
+            
+            // Convert random canvas coords to world coords, but set Z to something reasonable for 3D
+            const worldPosition = new Jolt.Vec3(
+                (Math.random() * 20 - 10), // Random X between -10 and 10
+                (y / canvas.height) * 10 + 5, // Random Y above ground
+                (Math.random() * 20 - 10)  // Random Z between -10 and 10
+            );
+
+            const settings = new Jolt.BodyCreationSettings();
+            settings.setShape(boxShape);
+            settings.setPosition(worldPosition);
+            settings.setMotionType(Jolt.EMotionType.kMotionTypeDynamic);
+            settings.setRestitution(0.5); // Bounciness
+            settings.setLinearDamping(0.1); // Reduce linear velocity over time
+            settings.setAngularDamping(0.1); // Reduce angular velocity over time
+            const bodyId = bodyInterface.createBody(settings);
+            physicsSystem.addBody(bodyId, Jolt.EActivation.kActivate);
+
+            const geometry = new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
+            const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            mesh.position.copy(worldPosition); // Use the same position for Three.js mesh
+            scene.add(mesh);
+
+            objects.push({ bodyId: bodyId, mesh: mesh, type: 'box' });
+            displayMessage('Box created!');
+        }
+
+        function createSphere(x, y, radius) {
+            if (!joltInitialized) {
+                console.warn("Jolt Physics is not initialized yet. Cannot create sphere.");
+                showWarning("Physics not initialized. Cannot create sphere.");
+                return;
+            }
+            const sphereShape = new Jolt.SphereShape(radius);
+            
+            // Convert random canvas coords to world coords, but set Z to something reasonable for 3D
+            const worldPosition = new Jolt.Vec3(
+                (Math.random() * 20 - 10), // Random X between -10 and 10
+                (y / canvas.height) * 10 + 5, // Random Y above ground
+                (Math.random() * 20 - 10)  // Random Z between -10 and 10
+            );
+
+            const settings = new Jolt.BodyCreationSettings();
+            settings.setShape(sphereShape);
+            settings.setPosition(worldPosition);
+            settings.setMotionType(Jolt.EMotionType.kMotionTypeDynamic);
+            settings.setRestitution(0.7);
+            settings.setLinearDamping(0.1);
+            settings.setAngularDamping(0.1);
+            const bodyId = bodyInterface.createBody(settings);
+            physicsSystem.addBody(bodyId, Jolt.EActivation.kActivate);
+
+            const geometry = new THREE.SphereGeometry(radius, 32, 32);
+            const material = new THREE.MeshStandardMaterial({ color: 0x0000ff });
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            mesh.position.copy(worldPosition); // Use the same position for Three.js mesh
+            scene.add(mesh);
+
+            objects.push({ bodyId: bodyId, mesh: mesh, type: 'sphere' });
+            displayMessage('Sphere created!');
+        }
+
+        const physicsStep = 1 / 60; // Fixed time step for physics
+        function updatePhysics() {
+            if (!joltInitialized) return;
+            physicsSystem.step(physicsStep);
+
+            for (const obj of objects) {
+                const bodyId = obj.bodyId;
+                const mesh = obj.mesh;
+                // Only update if the body is active (moving)
+                if (bodyInterface.isActive(bodyId)) {
+                    const position = bodyInterface.getPosition(bodyId);
+                    const rotation = bodyInterface.getRotation(bodyId);
+                    mesh.position.set(position.x, position.y, position.z);
+                    mesh.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+                }
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (joltInitialized) {
+                updatePhysics();
+            }
+            renderer.render(scene, camera);
+        }
+
+        // Event Listeners for buttons
+        createBoxButton.addEventListener('click', () => {
+            // Using random values for now, adjust as needed for interaction
+            const x = Math.random() * canvas.width; // This `x` is still canvas coordinate based
+            const y = Math.random() * canvas.height / 2; // This `y` is still canvas coordinate based
+            const sizeX = Math.random() * 2 + 1; // Smaller sizes for better visuals
+            const sizeY = Math.random() * 2 + 1;
+            const sizeZ = Math.random() * 2 + 1;
+            createBox(x, y, sizeX, sizeY, sizeZ);
+        });
+
+        createSphereButton.addEventListener('click', () => {
+            const x = Math.random() * canvas.width;
+            const y = Math.random() * canvas.height / 2;
+            const radius = Math.random() * 1 + 0.5;
+            createSphere(x, y, radius);
+        });
+
+        // Initialize Jolt Physics when the script runs
+        initJolt();
+    </script>
 </body>
 </html>
-
-
-<!-- https://pmndrs.github.io/cannon-es/docs/ -->
-
-<!-- <!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>cannon.js + three.js - basic integration example</title>
-    <link rel="stylesheet" href="css/style.css" type="text/css" />
-    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
-    <script type="module">
-      import { addTitle, addSourceButton } from './js/dom-utils.js'
-
-      addTitle()
-      addSourceButton()
-    </script>
-  </head>
-  <body>
-    <script type="module">
-      import * as CANNON from '../dist/cannon-es.js'
-      import * as THREE from 'https://unpkg.com/three@0.122.0/build/three.module.js'
-
-      /**
-       * Really basic example to show cannon.js integration
-       * with three.js.
-       * Each frame the cannon.js world is stepped forward and then
-       * the position and rotation data of the boody is copied
-       * over to the three.js scene.
-       */
-
-      // three.js variables
-      let camera, scene, renderer
-      let mesh
-
-      // cannon.js variables
-      let world
-      let body
-
-      initThree()
-      initCannon()
-      animate()
-
-      function initThree() {
-        // Camera
-        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 100)
-        camera.position.z = 5
-
-        // Scene
-        scene = new THREE.Scene()
-
-        // Renderer
-        renderer = new THREE.WebGLRenderer({ antialias: true })
-        renderer.setSize(window.innerWidth, window.innerHeight)
-
-        document.body.appendChild(renderer.domElement)
-
-        window.addEventListener('resize', onWindowResize)
-
-        // Box
-        const geometry = new THREE.BoxBufferGeometry(2, 2, 2)
-        const material = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true })
-
-        mesh = new THREE.Mesh(geometry, material)
-        scene.add(mesh)
-      }
-
-      function onWindowResize() {
-        camera.aspect = window.innerWidth / window.innerHeight
-        camera.updateProjectionMatrix()
-        renderer.setSize(window.innerWidth, window.innerHeight)
-      }
-
-      function initCannon() {
-        world = new CANNON.World()
-
-        // Box
-        const shape = new CANNON.Box(new CANNON.Vec3(1, 1, 1))
-        body = new CANNON.Body({
-          mass: 1,
-        })
-        body.addShape(shape)
-        body.angularVelocity.set(0, 10, 0)
-        body.angularDamping = 0.5
-        world.addBody(body)
-      }
-
-      function animate() {
-        requestAnimationFrame(animate)
-
-        // Step the physics world
-        world.fixedStep()
-
-        // Copy coordinates from cannon.js to three.js
-        mesh.position.copy(body.position)
-        mesh.quaternion.copy(body.quaternion)
-
-        // Render three.js
-        renderer.render(scene, camera)
-      }
-    </script>
-  </body>
-</html> -->
